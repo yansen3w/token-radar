@@ -27,6 +27,15 @@
 // a protocol live on more chains reaches more wallets, capped at five chains. No protocol name is
 // ever special-cased: the same function scores every row, and every row carries the reason its
 // figures give it.
+//
+// The gate's shape the board must keep: 100 to 4,000 rows, ranks 1..N, implied values
+// non-rising as rank ascends, every watchlist slug covered, 3 to 12 farm steps of 20 to 600
+// characters each. boardIssue() in this file checks the same shape before main.ts writes.
+//
+// Every number the board prints is recomputed by the dashboard's own copy of the formula, so the
+// page and the board are visibly the same model: a stale dataset shows up as a mismatch, never as
+// a silent lie. The farm plans are derived the same way, from the protocol's own record (category,
+// chains, TVL and age), never from a hand-written list of names.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -187,6 +196,16 @@ function finite(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+/** `value` held inside [`lo`, `hi`]; a value already inside comes back unchanged. */
+function clamp(value: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, value));
+}
+
+/** A number rounded to four decimals, for the multipliers the board prints. */
+function round4(n: number): number {
+  return Math.round(n * 1e4) / 1e4;
+}
+
 /** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
@@ -200,7 +219,7 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
+  const growthPct = clamp(rawGrowth, model.growth_floor, model.growth_cap);
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
@@ -463,8 +482,6 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
 }
-
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {

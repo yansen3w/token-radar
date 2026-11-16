@@ -11,6 +11,10 @@
 // each row's implied value from the snapshot figures with the same formula, so a stale dataset
 // shows up as a mismatch instead of a silent lie.
 //
+// The pipeline refuses bad input before it writes anything: a missing snapshot, a board the gate
+// would refuse, too few screenshots, or a screenshot name the dossier would refuse all stop the
+// run with a message on stderr and a non-zero exit, so a broken entry never ships half an output.
+//
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
@@ -42,6 +46,7 @@ if (!existsSync(inputFile)) {
   process.exit(2);
 }
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
+// The output directory: /output in the grader's container, MAKEFUN_OUTPUT_DIR outside it.
 
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const { board, radar } = buildRadar(snapshot);
@@ -55,12 +60,16 @@ mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
-/** Copy one directory's regular files into `to`, skipping names that start with a dot. */
+/**
+ * Copy one directory's regular files into `to`, skipping names that start with a dot. The names
+ * are copied in sorted order, so the copy does not depend on the order the filesystem hands them
+ * back: two runs on the same files write the same output directory.
+ */
 function copyFiles(from: string, to: string): string[] {
   if (!existsSync(from)) return [];
   mkdirSync(to, { recursive: true });
   const copied: string[] = [];
-  for (const name of readdirSync(from)) {
+  for (const name of readdirSync(from).sort()) {
     if (name.startsWith('.')) continue;
     const path = join(from, name);
     if (!statSync(path).isFile()) continue;
@@ -72,7 +81,7 @@ function copyFiles(from: string, to: string): string[] {
 
 const dashboardFiles = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
-if (shots.length < 3) {
+if (shots.length < 3 || shots.length > SCREENSHOT_CAPS.max) {
   process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);
   process.exit(1);
 }
