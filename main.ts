@@ -17,6 +17,11 @@
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
+//
+// The board also carries a velocity section: each row names its seven-day TVL velocity tier,
+// the dollars of TVL it gained or lost in the week, and whether its velocity marks it out for a
+// closer look, and board.json's top level summarises the tiers and the fastest movers. The
+// velocity figures come only from the snapshot's own change_7d and tvl_usd; nothing is invented.
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -57,7 +62,7 @@ if (issue !== null) {
 }
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board, velocity: radar.velocity })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 /**
@@ -98,4 +103,8 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEX
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.set_aside_size} above the floor set aside, ${radar.live_size} live set aside)\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashboardFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
+);
+
+process.stdout.write(
+  `token radar: velocity ${radar.velocity.reported} reported, ${radar.velocity.unreported} unreported, ${radar.velocity.velocity_watch_rows} velocity-watch rows, median 7-day change ${radar.velocity.median_change_7d ?? 'n/a'}%\n`,
 );

@@ -90,6 +90,44 @@ export const MODEL: ModelConstants = {
 /** The model's version label: the dashboard names it and the rules quote it. */
 export const MODEL_VERSION = 'radar-2';
 
+/** The velocity tiers a protocol's seven-day TVL change puts it in. */
+export type VelocityTier = 'surging' | 'rising' | 'steady' | 'cooling' | 'fading' | 'unknown';
+
+/** The change_7d bands that name a velocity tier, in per cent per week. */
+export const VELOCITY_BANDS = {
+  surging: 25,
+  rising: 10,
+  steady: -5,
+  cooling: -20,
+} as const;
+
+/** A protocol's velocity tier from its reported seven-day TVL change. */
+export function velocityTier(change7d: number | null): VelocityTier {
+  if (change7d === null || !Number.isFinite(change7d)) return 'unknown';
+  if (change7d >= VELOCITY_BANDS.surging) return 'surging';
+  if (change7d >= VELOCITY_BANDS.rising) return 'rising';
+  if (change7d >= VELOCITY_BANDS.steady) return 'steady';
+  if (change7d >= VELOCITY_BANDS.cooling) return 'cooling';
+  return 'fading';
+}
+
+/** The dollars of TVL a protocol gained or lost over the last seven days, or null unreported. */
+export function weeklyGainUsd(tvlUsd: number, change7d: number | null): number | null {
+  if (change7d === null || !Number.isFinite(change7d)) return null;
+  const priorTvl = tvlUsd / (1 + change7d / 100);
+  if (!Number.isFinite(priorTvl) || priorTvl <= 0) return null;
+  return Math.round(tvlUsd - priorTvl);
+}
+
+/**
+ * Whether a protocol's velocity marks it out for a closer look this week: a surging or rising
+ * tier whose weekly TVL gain is positive in dollars, not only in per cent.
+ */
+export function velocityWatch(tier: VelocityTier, weeklyGain: number | null): boolean {
+  if (tier !== 'surging' && tier !== 'rising') return false;
+  return weeklyGain !== null && weeklyGain > 0;
+}
+
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
 
@@ -116,6 +154,11 @@ export interface BoardRow {
   token_status: 'pre-token';
   watchlist: boolean;
   age_days: number | null;
+  velocity_tier: VelocityTier;
+  weekly_gain_usd: number | null;
+  velocity_rank: number;
+  gain_rank: number;
+  velocity_watch: boolean;
   implied_value_usd: number;
   reason: string;
   model: {
@@ -141,6 +184,11 @@ export interface RadarRow {
   mcap_usd: number | null;
   listed_at: string | null;
   age_days: number | null;
+  velocity_tier: VelocityTier;
+  weekly_gain_usd: number | null;
+  velocity_rank: number;
+  gain_rank: number;
+  velocity_watch: boolean;
   implied_value_usd: number;
   watchlist: boolean;
   reason: string;
@@ -179,6 +227,7 @@ export interface RadarData {
   median_implied_usd: number;
   rows: RadarRow[];
   live: LiveRow[];
+  velocity: VelocitySummary;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -453,6 +502,11 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   const growthRank = new Map(byGrowth.map((s, i) => [s.p.slug, i + 1]));
   const byAge = [...scored].sort((a, b) => (b.age ?? -1) - (a.age ?? -1));
   const ageRank = new Map(byAge.map((s, i) => [s.p.slug, i + 1]));
+  const weeklyGain = new Map(scored.map((s) => [s.p.slug, weeklyGainUsd(s.p.tvl_usd, s.p.change_7d)]));
+  const byVelocity = [...scored].sort((a, b) => (b.p.change_7d ?? -Infinity) - (a.p.change_7d ?? -Infinity) || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const velocityRank = new Map(byVelocity.map((s, i) => [s.p.slug, i + 1]));
+  const byGain = [...scored].sort((a, b) => (weeklyGain.get(b.p.slug) ?? -Infinity) - (weeklyGain.get(a.p.slug) ?? -Infinity) || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  const gainRank = new Map(byGain.map((s, i) => [s.p.slug, i + 1]));
 
   return scored.map((s, i) => ({
     rank: i + 1,
@@ -469,6 +523,11 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     token_status: 'pre-token',
     watchlist: snapshot.watchlist.includes(s.p.slug),
     age_days: s.age,
+    velocity_tier: velocityTier(s.p.change_7d),
+    weekly_gain_usd: weeklyGain.get(s.p.slug) ?? null,
+    velocity_rank: velocityRank.get(s.p.slug) ?? 0,
+    gain_rank: gainRank.get(s.p.slug) ?? 0,
+    velocity_watch: velocityWatch(velocityTier(s.p.change_7d), weeklyGain.get(s.p.slug) ?? null),
     implied_value_usd: s.implied,
     reason: reasonFor(s.p, s.age, i + 1, tvlRank.get(s.p.slug) ?? 0, growthRank.get(s.p.slug) ?? 0, ageRank.get(s.p.slug) ?? 0, snapshot.watchlist.includes(s.p.slug), scored.length),
     model: {
@@ -481,6 +540,82 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
+}
+
+/** One velocity tier's headcount on the board. */
+export interface VelocityTierCount {
+  tier: VelocityTier;
+  rows: number;
+}
+
+/** A board row's velocity in one line, for the summary's mover lists. */
+export interface VelocityMover {
+  slug: string;
+  name: string;
+  rank: number;
+  change_7d: number | null;
+  weekly_gain_usd: number | null;
+  tier: VelocityTier;
+  watchlist: boolean;
+}
+
+/** The board's velocity in one place: tier headcounts, the fastest movers, and the watch flag. */
+export interface VelocitySummary {
+  as_of: string;
+  reported: number;
+  unreported: number;
+  tier_counts: VelocityTierCount[];
+  fastest_growth: VelocityMover[];
+  biggest_weekly_gain: VelocityMover[];
+  fastest_fall: VelocityMover[];
+  velocity_watch_rows: number;
+  velocity_watch_slugs: string[];
+  median_change_7d: number | null;
+}
+
+/** A board row trimmed to the velocity fields the summary lists. */
+function velocityMover(row: BoardRow): VelocityMover {
+  return {
+    slug: row.slug,
+    name: row.name,
+    rank: row.rank,
+    change_7d: row.change_7d,
+    weekly_gain_usd: row.weekly_gain_usd,
+    tier: row.velocity_tier,
+    watchlist: row.watchlist,
+  };
+}
+
+/**
+ * The board's velocity summary, from the rows alone: how many rows sit in each tier, the five
+ * fastest growers, the five biggest weekly dollar gains, the five fastest falls, and the rows
+ * whose velocity marks them out. Every figure comes from the snapshot's own change_7d and
+ * tvl_usd; a row with no reported change counts as unreported, never as zero.
+ */
+export function summarizeVelocity(board: BoardRow[], asOf: string): VelocitySummary {
+  const tiers: VelocityTier[] = ['surging', 'rising', 'steady', 'cooling', 'fading', 'unknown'];
+  const tier_counts = tiers.map((tier) => ({ tier, rows: board.filter((r) => r.velocity_tier === tier).length }));
+  const reported = board.filter((r) => r.change_7d !== null);
+  const changes = reported.map((r) => r.change_7d as number).sort((a, b) => a - b);
+  const median_change_7d = changes.length === 0
+    ? null
+    : Math.round((changes.length % 2 === 1 ? changes[(changes.length - 1) / 2]! : (changes[changes.length / 2 - 1]! + changes[changes.length / 2]!) / 2) * 10) / 10;
+  const byGrowth = [...reported].sort((a, b) => (b.change_7d as number) - (a.change_7d as number) || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const byGain = [...reported].filter((r) => r.weekly_gain_usd !== null).sort((a, b) => (b.weekly_gain_usd as number) - (a.weekly_gain_usd as number) || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const byFall = [...byGrowth].reverse();
+  const watched = board.filter((r) => r.velocity_watch).sort((a, b) => a.rank - b.rank);
+  return {
+    as_of: asOf,
+    reported: reported.length,
+    unreported: board.length - reported.length,
+    tier_counts,
+    fastest_growth: byGrowth.slice(0, 5).map(velocityMover),
+    biggest_weekly_gain: byGain.slice(0, 5).map(velocityMover),
+    fastest_fall: byFall.slice(0, 5).map(velocityMover),
+    velocity_watch_rows: watched.length,
+    velocity_watch_slugs: watched.map((r) => r.slug),
+    median_change_7d,
+  };
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
@@ -513,6 +648,11 @@ export function radarRow(row: BoardRow): RadarRow {
     mcap_usd: row.mcap_usd,
     listed_at: row.listed_at,
     age_days: row.age_days,
+    velocity_tier: row.velocity_tier,
+    weekly_gain_usd: row.weekly_gain_usd,
+    velocity_rank: row.velocity_rank,
+    gain_rank: row.gain_rank,
+    velocity_watch: row.velocity_watch,
     implied_value_usd: row.implied_value_usd,
     watchlist: row.watchlist,
     reason: row.reason,
@@ -554,6 +694,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     median_implied_usd: median,
     rows: board.map(radarRow),
     live,
+    velocity: summarizeVelocity(board, snapshot.as_of),
   };
   return { board, radar };
 }
